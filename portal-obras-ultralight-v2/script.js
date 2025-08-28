@@ -1,7 +1,8 @@
 /* ================== Portal de Obras — JS (frontend) ==================
-   - Busca do backend (Drive) com action=list (links públicos)
+   - Lista rápida do backend (links públicos)  ➜ tela carrega leve
+   - Álbum completo carregado SOB DEMANDA ao abrir a obra
    - Cache local leve (metadados + miniaturas comprimidas)
-   - Envia JSON + arquivos (capa e extras) ao Apps Script Web App
+   - Envio de JSON + arquivos (multipart) com fallback base64
    ------------------------------------------------------------------ */
 
 const $  = s => document.querySelector(s);
@@ -16,7 +17,7 @@ const fmtDate = iso => iso ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium'
 const byCompletionDesc = (a,b) => (b.completion||0) - (a.completion||0);
 const byPhotoDateDesc  = (a,b) => new Date(b.takenAt||b.createdAt||0) - new Date(a.takenAt||a.createdAt||0);
 
-// Placeholder inline (evita 404 em produção/netlify)
+// Placeholder inline (evita 404 em prod)
 const PLACEHOLDER =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675">
@@ -24,11 +25,9 @@ const PLACEHOLDER =
   style="fill:#6c757d;font-family:Inter,Arial,sans-serif;font-size:28px">Sem imagem</text></svg>`);
 
 /* ========= BACKEND (Apps Script Web App) =========
-   Troque pela URL /exec do seu deploy ATIVO e mantenha o mesmo SECRET do Code.gs
-   ------------------------------------------------ */
+   >>> Troque a URL abaixo pela sua /exec ativa e mantenha o SECRET igual ao Code.gs */
 const BACKEND = {
-  // >>>>> ATUALIZE AQUI COM A SUA URL /exec ATIVA
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbzz0MCGiA43dfhfGiBtTfd6bqi3QcdAAKtJdDYlXyhJgRxxF21iqgbKEmlKYaN2iQOQig/exec',
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbwBvCsLqhZcHhqxaXdlK6XQvfYyfrIRlAt_ocP2lWnq_gWSI-DYcRzrm_6ZB-_bMUxKYA/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
 /* ================================================ */
@@ -75,16 +74,15 @@ function safeSaveLocal(items){
 function hydrateLocal(){ try{ const raw=localStorage.getItem(LS_KEY); if(raw) state.items=JSON.parse(raw);}catch{} }
 
 /* ===== Helpers de rede ===== */
-function buildListUrl(){
-  // Usa URL API-safe (evita erros de ? e & duplicados)
+function buildUrl(params){
   const u = new URL(BACKEND.WEB_APP_URL);
-  u.searchParams.set('action','list');
+  Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,String(v)));
   u.searchParams.set('secret', BACKEND.SECRET);
   u.searchParams.set('t', Date.now().toString()); // cache-buster
   return u.toString();
 }
 
-/** fetch com timeout simples (evita travar indefinidamente) */
+/** fetch com timeout */
 async function fetchWithTimeout(resource, options = {}, timeoutMs = 10000){
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -96,27 +94,33 @@ async function fetchWithTimeout(resource, options = {}, timeoutMs = 10000){
   }
 }
 
-async function fetchRemoteItems(){
-  const url = buildListUrl();
-  console.log('[fetchRemoteItems] GET', url);
+async function fetchList(){
+  const url = buildUrl({ action:'list' });
   const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 10000);
   if (!res.ok) throw new Error('HTTP '+res.status);
   const json = await res.json();
   if (!json?.ok) throw new Error(json?.error||'backend_error');
   return json.items || [];
 }
+async function fetchAlbum(folderId){
+  const url = buildUrl({ action:'album', id:folderId });
+  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 15000);
+  if (!res.ok) throw new Error('HTTP '+res.status);
+  const json = await res.json();
+  if (!json?.ok) throw new Error(json?.error||'backend_error');
+  return json.photos || [];
+}
 
 /* ===== carga inicial ===== */
 async function loadInitial(){
-  // 1) tenta remoto (Drive)
   try{
-    const remote = await fetchRemoteItems();
+    const remote = await fetchList();
     if (Array.isArray(remote)) {
       state.items = remote.map(it=>({
         id: it.id, title: it.title, engineer: it.engineer, location: it.location,
         startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
         cover: it.cover || '',
-        photos: (it.photos||[]).map(p=>({src:p.src, alt:p.alt||it.title, takenAt:p.takenAt}))
+        photos: [] // álbum completo só on-demand
       }));
       normalize(); safeSaveLocal(state.items); fillYears(); render();
       return;
@@ -125,7 +129,7 @@ async function loadInitial(){
     console.warn('Falha ao carregar do backend, caindo para cache local:', err);
   }
 
-  // 2) offline / sem remoto: cache local
+  // offline / sem remoto
   hydrateLocal(); normalize(); fillYears(); render();
 }
 
@@ -160,8 +164,9 @@ function render(){
   state.filtered.forEach((it, idx)=>{
     const n=tpl.content.cloneNode(true);
     const img=n.querySelector('.card__img');
-    img.src = it.cover || it.photos?.[0]?.src || PLACEHOLDER;
+    img.src = it.cover || PLACEHOLDER;
     img.alt = it.title || 'Obra';
+    img.loading = 'lazy';
 
     n.querySelector('.overlay').style.opacity = Math.min(1, Math.max(0, (it.completion||0)/100));
     n.querySelector('.badge').textContent = `${it.status||'—'} • ${it.completion||0}%`;
@@ -187,14 +192,64 @@ function reveal(){
 }
 
 /* ===== Álbum ===== */
-function openAlbum(filteredIndex){
-  const it=state.filtered[filteredIndex]; if(!it || !(it.photos||[]).length) return;
-  state.lb.albumIndex=filteredIndex; state.lb.photoIndex=0;
-  renderLightbox();
-  $('#lightbox').hidden=false; document.body.style.overflow='hidden'; document.body.classList.add('album-open');
+async function ensureAlbumLoaded(filteredIndex){
+  const it = state.filtered[filteredIndex];
+  if (!it) return;
+  // se já tem fotos carregadas, ok
+  if (Array.isArray(it.photos) && it.photos.length) return;
+
+  try{
+    const all = await fetchAlbum(it.id);
+    // mapeia e ordena
+    it.photos = (all||[]).map(p=>({
+      src: p.src || PLACEHOLDER,
+      alt: p.alt || it.title || '',
+      takenAt: p.takenAt || new Date().toISOString()
+    })).sort(byPhotoDateDesc);
+
+    // propaga para state.items (pelo id)
+    const idx = state.items.findIndex(x=>x.id===it.id);
+    if (idx >= 0) state.items[idx].photos = it.photos.slice();
+
+    // salva cache leve
+    safeSaveLocal(state.items);
+  }catch(err){
+    console.warn('Falha ao carregar álbum:', err);
+    it.photos = it.photos || [];
+  }
 }
+
+async function openAlbum(filteredIndex){
+  const it = state.filtered[filteredIndex]; if(!it) return;
+
+  // feedback de loading no lightbox antes de buscar
+  $('#lbImg').src = PLACEHOLDER;
+  $('#lbTitle').textContent = it.title || 'Sem título';
+  $('#lbInfo').innerHTML = `
+    <div><strong>Engenheiro:</strong> ${it.engineer||'—'}</div>
+    <div><strong>Local:</strong> ${it.location||'—'}</div>
+    <div><strong>Status:</strong> ${it.status||'—'} • ${it.completion||0}%</div>
+    <div><strong>Início:</strong> ${it.startDate?fmtDate(it.startDate):'—'}</div>
+    <div><strong>Prev. Término:</strong> ${it.endDate?fmtDate(it.endDate):'—'}</div>`;
+  $('#lbDate').textContent = '';
+  $('#thumbs').innerHTML = '<div style="padding:12px;color:#6c757d">Carregando fotos…</div>';
+
+  state.lb.albumIndex=filteredIndex; state.lb.photoIndex=0;
+  $('#lightbox').hidden=false; document.body.style.overflow='hidden'; document.body.classList.add('album-open');
+
+  // carrega as fotos se necessário
+  await ensureAlbumLoaded(filteredIndex);
+  renderLightbox();
+}
+
 function renderLightbox(){
-  const it=state.filtered[state.lb.albumIndex]; const p=it.photos[state.lb.photoIndex];
+  const it=state.filtered[state.lb.albumIndex]; if(!it) return;
+  if (!Array.isArray(it.photos) || !it.photos.length){
+    $('#lbImg').src = PLACEHOLDER;
+    $('#thumbs').innerHTML = '<div style="padding:12px;color:#6c757d">Sem fotos.</div>';
+    return;
+  }
+  const p=it.photos[state.lb.photoIndex];
   $('#lbImg').src=p.src || PLACEHOLDER;
   $('#lbTitle').textContent=it.title || 'Sem título';
   $('#lbInfo').innerHTML = `
@@ -208,12 +263,16 @@ function renderLightbox(){
   it.photos.forEach((ph,i)=>{
     const b=document.createElement('button'); b.className='thumb'+(i===state.lb.photoIndex?' active':'');
     const im=document.createElement('img'); im.src=ph.src || PLACEHOLDER; im.alt=ph.alt||it.title||'';
+    im.loading = 'lazy';
     b.appendChild(im); b.addEventListener('click',()=>{ state.lb.photoIndex=i; renderLightbox();});
     th.appendChild(b);
   });
 }
 function closeLightbox(){ $('#lightbox').hidden=true; document.body.style.overflow=''; document.body.classList.remove('album-open'); }
-function navLightbox(d){ const it=state.filtered[state.lb.albumIndex]; const n=it.photos.length; state.lb.photoIndex=(state.lb.photoIndex+d+n)%n; renderLightbox(); }
+function navLightbox(d){
+  const it=state.filtered[state.lb.albumIndex]; if(!it || !it.photos?.length) return;
+  const n=it.photos.length; state.lb.photoIndex=(state.lb.photoIndex+d+n)%n; renderLightbox();
+}
 
 /* ===== Modal ===== */
 function openModal(id=null){
@@ -249,7 +308,7 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
     if(res.ok){
       const json=await res.json();
       if(triedFilesCount>0 && (!Array.isArray(json.files)||json.files.length===0)){
-        // respondeu ok mas sem arquivos: força base64
+        // ok mas sem files -> tenta base64
         console.warn('[sendToBackend] ok:true mas sem files; fallback base64');
         return await sendAsBase64(payload,coverFile,extraFiles);
       }
@@ -317,23 +376,22 @@ $('#workForm').addEventListener('submit', async (e)=>{
   }
   payload.photos.sort(byPhotoDateDesc);
 
-  // atualiza UI + cache
+  // atualiza UI + cache (instantâneo)
   const idx=state.items.findIndex(x=>x.id===payload.id);
   if(idx>=0) state.items[idx]={...state.items[idx],...payload}; else state.items.push(payload);
   normalize(); safeSaveLocal(state.items); closeModal(); render();
 
-  // envia e, após sucesso, recarrega do backend para refletir links públicos
+  // envia e, se ok, recarrega a lista (cobertura/links públicos atualizados)
   try{
     const result=await sendToBackend(payload,coverFileToSend,extrasFiles);
     if(result?.ok){
-      console.log('Backend OK:',result);
       try{
-        const remote=await fetchRemoteItems();
+        const remote=await fetchList();
         if(Array.isArray(remote)){
           state.items=remote.map(it=>({
             id:it.id,title:it.title,engineer:it.engineer,location:it.location,
             startDate:it.startDate,endDate:it.endDate,status:it.status,completion:it.completion,
-            cover:it.cover||'', photos:(it.photos||[]).map(p=>({src:p.src,alt:p.alt||it.title,takenAt:p.takenAt}))
+            cover:it.cover||'', photos:[]
           }));
           normalize(); safeSaveLocal(state.items); fillYears(); render();
         }
