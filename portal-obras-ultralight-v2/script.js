@@ -26,7 +26,7 @@ const PLACEHOLDER =
 /* ========= BACKEND (Apps Script Web App) =========
    Use exatamente os valores do seu deploy /exec e o MESMO SECRET do Code.gs. */
 const BACKEND = {
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbxsqGN1lfzhqhe_MowU4jkBFFwO7Vf4moEZcYQRZaUvepcMVPScdYA7Ds2UDVv0c4jK5w/exec',
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbyzqq_Z3kt3ItXDMidlMPhKQdkly-GiQDqQxqyEOcO_rkDjHJgslg6ou1I_hmsjmBdLLw/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
 
