@@ -16,20 +16,23 @@ const fmtDate = iso => iso ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium'
 const byCompletionDesc = (a,b) => (b.completion||0) - (a.completion||0);
 const byPhotoDateDesc  = (a,b) => new Date(b.takenAt||b.createdAt||0) - new Date(a.takenAt||a.createdAt||0);
 
-// Placeholder inline
+// Placeholder inline (evita 404)
 const PLACEHOLDER =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675">
   <rect width="100%" height="100%" fill="#e9ecef"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
   style="fill:#6c757d;font-family:Inter,Arial,sans-serif;font-size:28px">Sem imagem</text></svg>`);
 
-/* ========= BACKEND ========= */
+/* ========= BACKEND (Apps Script Web App) =========
+   Use exatamente os valores do seu deploy /exec e o MESMO SECRET do Code.gs. */
 const BACKEND = {
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbyq7dctE71LGLq3mRG9ttf0zwrBm4QI4jYx6l0lzQ-08j97EGlKZCk6ucXz2TVqcV5H4g/exec',
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbxsqGN1lfzhqhe_MowU4jkBFFwO7Vf4moEZcYQRZaUvepcMVPScdYA7Ds2UDVv0c4jK5w/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
 
 /* ===== utilidades ===== */
+
+// Comprime imagem para miniatura (dataURL) – poupa localStorage
 async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
   if (!file || !file.type?.startsWith('image/')) return null;
   const img = await new Promise((res, rej)=>{
@@ -43,10 +46,13 @@ async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
   canvas.getContext('2d').drawImage(img,0,0,w,h);
   return canvas.toDataURL('image/jpeg',quality);
 }
+
+// Arquivo -> dataURL (para fallback base64)
 function fileToDataURL(file){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
 }
 
+// Salva versão “leve” no localStorage (evita estourar quota)
 function safeSaveLocal(items){
   const lightweight = items.map(it=>{
     const photos=(it.photos||[]).slice(0,MAX_LOCAL_PHOTOS).map(p=>({
@@ -68,6 +74,7 @@ function safeSaveLocal(items){
     try{ localStorage.setItem(LS_KEY, JSON.stringify(minimal)); }catch{}
   }
 }
+
 function hydrateLocal(){ try{ const raw=localStorage.getItem(LS_KEY); if(raw) state.items=JSON.parse(raw);}catch{} }
 
 /* ===== busca remota (Drive via backend) ===== */
@@ -85,8 +92,7 @@ async function loadInitial(){
   // 1) tenta remoto (Drive)
   try{
     const remote = await fetchRemoteItems();
-    if (Array.isArray(remote) && remote.length){
-      // normaliza e usa remoto
+    if (Array.isArray(remote)){
       state.items = remote.map(it=>({
         id: it.id, title: it.title, engineer: it.engineer, location: it.location,
         startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
@@ -207,6 +213,10 @@ function openModal(id=null){
 function closeModal(){ $('#modal').hidden=true; document.body.style.overflow=''; state.editingId=null; }
 
 /* ===== envio ao backend ===== */
+
+// 1) tentativa: envia arquivos reais (FormData)
+// 2) fallback: reenvia como campos *_b64 (base64) caso a 1ª falhe OU
+//    o backend retorne ok:true mas sem 'files' (bloqueios do GAS)
 async function sendToBackend(payload, coverFile, extraFiles=[]){
   if(!BACKEND.WEB_APP_URL || !BACKEND.SECRET) return {ok:false,skipped:true};
   const triedFilesCount=(coverFile?1:0)+extraFiles.length;
@@ -236,6 +246,7 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   // fallback base64
   return await sendAsBase64(payload,coverFile,extraFiles);
 }
+
 async function sendAsBase64(payload, coverFile, extraFiles){
   try{
     const form2=new FormData();
@@ -298,10 +309,9 @@ $('#workForm').addEventListener('submit', async (e)=>{
   try{
     const result=await sendToBackend(payload,coverFileToSend,extrasFiles);
     if(result?.ok){
-      // reconsulta o backend para pegar URLs públicas
       try{
         const remote=await fetchRemoteItems();
-        if(Array.isArray(remote)&&remote.length){
+        if(Array.isArray(remote)){
           state.items=remote.map(it=>({
             id:it.id,title:it.title,engineer:it.engineer,location:it.location,
             startDate:it.startDate,endDate:it.endDate,status:it.status,completion:it.completion,
