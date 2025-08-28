@@ -15,7 +15,7 @@ const fmtDate = iso => new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium'}).for
 const byCompletionDesc = (a,b) => (b.completion||0) - (a.completion||0);
 const byPhotoDateDesc  = (a,b) => new Date(b.takenAt||b.createdAt||0) - new Date(a.takenAt||a.createdAt||0);
 
-// Placeholder inline para evitar 404 quando não houver imagem
+// Placeholder inline (evita 404)
 const PLACEHOLDER =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675">
@@ -47,7 +47,7 @@ async function shrinkImage(file, maxW = 1024, maxH = 1024, quality = 0.72) {
   return canvas.toDataURL('image/jpeg', quality);
 }
 
-// Arquivo -> dataURL (original, para fallback base64)
+// Arquivo -> dataURL (para fallback base64)
 function fileToDataURL(file){
   return new Promise((res, rej)=>{
     const r = new FileReader();
@@ -204,12 +204,15 @@ function closeModal(){ $('#modal').hidden=true; document.body.style.overflow='';
 /* ---------- Envio ao BACKEND ---------- */
 
 // 1) tentativa: envia arquivos reais (FormData)
-// 2) fallback: reenvia como campos *_b64 (base64) caso a 1ª falhe
+// 2) fallback: reenvia como campos *_b64 (base64) caso a 1ª falhe OU caso
+//    a resposta venha ok:true mas sem files mesmo tendo tentado enviar arquivos.
 async function sendToBackend(payload, coverFile, extraFiles=[]){
   if (!BACKEND.WEB_APP_URL || !BACKEND.SECRET) {
     console.warn('BACKEND não configurado. Pulei o envio.');
     return { ok:false, skipped:true };
   }
+
+  const triedFilesCount = (coverFile ? 1 : 0) + extraFiles.length;
 
   // -------- tentativa principal (arquivos) --------
   const form1 = new FormData();
@@ -228,13 +231,31 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
 
   try{
     const res = await fetch(BACKEND.WEB_APP_URL, { method:'POST', body: form1 });
-    if (res.ok) return await res.json();
+    if (res.ok) {
+      const json = await res.json();
+      console.log('[Upload arquivo] resp:', json);
+      // Se tentei enviar arquivos e o backend retornou zero arquivos, forço fallback:
+      if (triedFilesCount > 0 && (!Array.isArray(json.files) || json.files.length === 0)) {
+        console.warn('Backend respondeu ok, mas sem arquivos. Acionando fallback base64…');
+        return await sendAsBase64(payload, coverFile, extraFiles);
+      }
+      return json;
+    }
     console.warn('Upload com arquivos falhou:', res.status, res.statusText);
   } catch(err){
     console.warn('Falha de rede no upload com arquivos:', err);
   }
 
+  // Se nem tentei enviar arquivos (apenas metadados), não há motivo para fallback:
+  if (triedFilesCount === 0) {
+    return { ok:false, error:'upload_skipped_no_files' };
+  }
+
   // -------- fallback (base64) --------
+  return await sendAsBase64(payload, coverFile, extraFiles);
+}
+
+async function sendAsBase64(payload, coverFile, extraFiles){
   try{
     const form2 = new FormData();
     form2.append("secret", BACKEND.SECRET);
@@ -253,7 +274,11 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
     }
 
     const res2 = await fetch(BACKEND.WEB_APP_URL, { method:'POST', body: form2 });
-    if (res2.ok) return await res2.json();
+    if (res2.ok) {
+      const json2 = await res2.json();
+      console.log('[Upload base64] resp:', json2);
+      return json2;
+    }
     console.warn('Fallback base64 falhou:', res2.status, res2.statusText);
     return { ok:false, error:`backend_failed_${res2.status}` };
   }catch(err2){
@@ -276,14 +301,18 @@ $('#workForm').addEventListener('submit', async (e)=>{
 
   // Miniaturas COMPRIMIDAS para preview/local cache
   const extrasFiles = [...f.extraFiles.files];
+  let coverFileToSend = null;
 
   if(!state.editingId){
     if(f.coverFile.files.length){
-      const coverThumb = await shrinkImage(f.coverFile.files[0]);
+      coverFileToSend = f.coverFile.files[0];
+      const coverThumb = await shrinkImage(coverFileToSend);
       payload.cover = coverThumb || '';
       payload.photos.push({ src: coverThumb || '', alt: payload.title+' (capa)', takenAt:new Date().toISOString() });
     } else { alert('Selecione a foto principal.'); return; }
   } else {
+    // Edição: mantemos capa/álbum existentes e só enviaremos arquivos se o usuário anexar novos
+    if (f.coverFile.files.length) coverFileToSend = f.coverFile.files[0];
     const it=state.items.find(x=>x.id===state.editingId);
     if(it){ payload.cover=it.cover||''; payload.photos=(it.photos||[]).slice(); }
   }
@@ -301,7 +330,7 @@ $('#workForm').addEventListener('submit', async (e)=>{
 
   // Envia ao backend
   try{
-    const result = await sendToBackend(payload, f.coverFile.files[0] || null, extrasFiles);
+    const result = await sendToBackend(payload, coverFileToSend, extrasFiles);
     if (result?.ok) {
       console.log('Backend OK:', result);
     } else if (!result?.skipped) {
