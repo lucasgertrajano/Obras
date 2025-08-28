@@ -7,11 +7,20 @@ const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
 const LS_KEY = "portal_obras_items_v2";
+const MAX_LOCAL_PHOTOS = 12; // limite por obra no cache leve
+
 const state = { items: [], filtered: [], editingId: null, lb: { albumIndex:-1, photoIndex:0 } };
 
 const fmtDate = iso => new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium'}).format(new Date(iso));
 const byCompletionDesc = (a,b) => (b.completion||0) - (a.completion||0);
 const byPhotoDateDesc  = (a,b) => new Date(b.takenAt||b.createdAt||0) - new Date(a.takenAt||a.createdAt||0);
+
+// Placeholder inline para evitar 404 quando não houver imagem
+const PLACEHOLDER =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675">
+  <rect width="100%" height="100%" fill="#e9ecef"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+  style="fill:#6c757d;font-family:Inter,Arial,sans-serif;font-size:28px">Sem imagem</text></svg>`);
 
 /* ========= BACKEND (Apps Script Web App) =========
    Use exatamente os valores do seu deploy /exec e o MESMO SECRET do Code.gs. */
@@ -38,14 +47,32 @@ async function shrinkImage(file, maxW = 1024, maxH = 1024, quality = 0.72) {
   return canvas.toDataURL('image/jpeg', quality);
 }
 
+// Arquivo -> dataURL (original, para fallback base64)
+function fileToDataURL(file){
+  return new Promise((res, rej)=>{
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
 // Salva versão “leve” no localStorage (evita estourar quota)
 function safeSaveLocal(items){
-  const lightweight = items.map(it => ({
-    id: it.id, title: it.title, engineer: it.engineer, location: it.location,
-    startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
-    cover: it.cover && it.cover.startsWith('data:') ? it.cover : '',
-    photos: (it.photos||[]).map(p => ({ src: (p.src?.startsWith('data:') ? p.src : ''), alt: p.alt || '', takenAt: p.takenAt || new Date().toISOString() }))
-  }));
+  const lightweight = items.map(it => {
+    const photos = (it.photos||[]).slice(0, MAX_LOCAL_PHOTOS).map(p => ({
+      src: (p.src && p.src.startsWith('data:')) ? p.src : '',
+      alt: p.alt || '',
+      takenAt: p.takenAt || new Date().toISOString()
+    }));
+    return {
+      id: it.id, title: it.title, engineer: it.engineer, location: it.location,
+      startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
+      cover: (it.cover && it.cover.startsWith('data:')) ? it.cover : '',
+      photos
+    };
+  });
+
   try { localStorage.setItem(LS_KEY, JSON.stringify(lightweight)); }
   catch (err) {
     console.warn('Cache local cheio; salvando versão mínima.', err);
@@ -59,12 +86,16 @@ function hydrateLocal(){ try{ const raw = localStorage.getItem(LS_KEY); if(raw) 
 /* ---------- carga inicial ---------- */
 async function loadInitial(){
   try{
-    const res  = await fetch('data/albums.json');
-    const demo = await res.json();
-    hydrateLocal();
-    const map = new Map(demo.map(d=>[d.id||d.title,d]));
-    for(const it of state.items){ map.set(it.id||it.title, it); }
-    state.items = [...map.values()];
+    const res  = await fetch('data/albums.json', {cache:'no-store'});
+    if (res.ok) {
+      const demo = await res.json();
+      hydrateLocal();
+      const map = new Map((demo||[]).map(d=>[d.id||d.title,d]));
+      for(const it of state.items){ map.set(it.id||it.title, it); }
+      state.items = [...map.values()];
+    } else {
+      hydrateLocal();
+    }
   }catch{ hydrateLocal(); }
   normalize(); fillYears(); render();
 }
@@ -86,6 +117,7 @@ function fillYears(){
 
 function render(){
   const y = $('#yearFilter').value, s = $('#statusFilter').value, q = $('#searchInput').value.trim().toLowerCase();
+
   state.filtered = state.items.filter(it=>{
     const okY = y==='all' || String(new Date(it.startDate).getFullYear())===y;
     const okS = s==='all' || it.status===s;
@@ -100,7 +132,7 @@ function render(){
   state.filtered.forEach((it, idx)=>{
     const n = tpl.content.cloneNode(true);
     const img = n.querySelector('.card__img');
-    img.src = it.cover || it.photos?.[0]?.src || 'images/placeholder.jpg';
+    img.src = it.cover || it.photos?.[0]?.src || PLACEHOLDER;
     img.alt = it.title || 'Obra';
 
     n.querySelector('.overlay').style.opacity = Math.min(1, Math.max(0, (it.completion||0)/100));
@@ -133,7 +165,7 @@ function openAlbum(filteredIndex){
 }
 function renderLightbox(){
   const it=state.filtered[state.lb.albumIndex]; const p=it.photos[state.lb.photoIndex];
-  $('#lbImg').src=p.src || 'images/placeholder.jpg';
+  $('#lbImg').src=p.src || PLACEHOLDER;
   $('#lbTitle').textContent=it.title || 'Sem título';
   $('#lbInfo').innerHTML = `
     <div><strong>Engenheiro:</strong> ${it.engineer||'—'}</div>
@@ -145,7 +177,7 @@ function renderLightbox(){
   const th=$('#thumbs'); th.innerHTML='';
   it.photos.forEach((ph,i)=>{
     const b=document.createElement('button'); b.className='thumb'+(i===state.lb.photoIndex?' active':'');
-    const im=document.createElement('img'); im.src=ph.src || 'images/placeholder.jpg'; im.alt=ph.alt||it.title||'';
+    const im=document.createElement('img'); im.src=ph.src || PLACEHOLDER; im.alt=ph.alt||it.title||'';
     b.appendChild(im); b.addEventListener('click',()=>{ state.lb.photoIndex=i; renderLightbox();});
     th.appendChild(b);
   });
@@ -170,25 +202,71 @@ function openModal(id=null){
 function closeModal(){ $('#modal').hidden=true; document.body.style.overflow=''; state.editingId=null; }
 
 /* ---------- Envio ao BACKEND ---------- */
+
+// 1) tentativa: envia arquivos reais (FormData)
+// 2) fallback: reenvia como campos *_b64 (base64) caso a 1ª falhe
 async function sendToBackend(payload, coverFile, extraFiles=[]){
-  if (!BACKEND.WEB_APP_URL || !BACKEND.SECRET) { console.warn('BACKEND não configurado. Pulei o envio.'); return { ok:false, skipped:true }; }
-  const form = new FormData();
-  form.append("secret", BACKEND.SECRET);
-  form.append('id', payload.id); form.append('title', payload.title);
-  form.append('engineer', payload.engineer); form.append('location', payload.location);
-  form.append('startDate', payload.startDate); form.append('endDate', payload.endDate);
-  form.append('status', payload.status); form.append('completion', String(payload.completion));
-  if (coverFile) form.append('cover', coverFile, coverFile.name || 'capa.jpg');
-  extraFiles.forEach((f,i)=> form.append(`extra${i}`, f, f.name || `foto_${String(i+1).padStart(2,'0')}.jpg`));
-  const res = await fetch(BACKEND.WEB_APP_URL, { method:'POST', body:form });
-  if (!res.ok) throw new Error('Falha no backend: '+res.status);
-  return await res.json();
+  if (!BACKEND.WEB_APP_URL || !BACKEND.SECRET) {
+    console.warn('BACKEND não configurado. Pulei o envio.');
+    return { ok:false, skipped:true };
+  }
+
+  // -------- tentativa principal (arquivos) --------
+  const form1 = new FormData();
+  form1.append("secret", BACKEND.SECRET);
+  form1.append('id', payload.id);
+  form1.append('title', payload.title);
+  form1.append('engineer', payload.engineer);
+  form1.append('location', payload.location);
+  form1.append('startDate', payload.startDate);
+  form1.append('endDate', payload.endDate);
+  form1.append('status', payload.status);
+  form1.append('completion', String(payload.completion));
+
+  if (coverFile) form1.append('cover', coverFile, coverFile.name || 'capa.jpg');
+  extraFiles.forEach((f,i)=> form1.append(`extra${i}`, f, f.name || `foto_${String(i+1).padStart(2,'0')}.jpg`));
+
+  try{
+    const res = await fetch(BACKEND.WEB_APP_URL, { method:'POST', body: form1 });
+    if (res.ok) return await res.json();
+    console.warn('Upload com arquivos falhou:', res.status, res.statusText);
+  } catch(err){
+    console.warn('Falha de rede no upload com arquivos:', err);
+  }
+
+  // -------- fallback (base64) --------
+  try{
+    const form2 = new FormData();
+    form2.append("secret", BACKEND.SECRET);
+    form2.append('id', payload.id);
+    form2.append('title', payload.title);
+    form2.append('engineer', payload.engineer);
+    form2.append('location', payload.location);
+    form2.append('startDate', payload.startDate);
+    form2.append('endDate', payload.endDate);
+    form2.append('status', payload.status);
+    form2.append('completion', String(payload.completion));
+
+    if (coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
+    for (let i=0;i<extraFiles.length;i++){
+      form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
+    }
+
+    const res2 = await fetch(BACKEND.WEB_APP_URL, { method:'POST', body: form2 });
+    if (res2.ok) return await res2.json();
+    console.warn('Fallback base64 falhou:', res2.status, res2.statusText);
+    return { ok:false, error:`backend_failed_${res2.status}` };
+  }catch(err2){
+    console.error('Erro no fallback base64:', err2);
+    return { ok:false, error:String(err2) };
+  }
 }
 
 /* ---------- Submit ---------- */
 $('#workForm').addEventListener('submit', async (e)=>{
   e.preventDefault();
   const f=e.currentTarget;
+
   const payload = {
     id: state.editingId || ('obra-'+Math.random().toString(36).slice(2,8)),
     title: f.title.value.trim(), engineer: f.engineer.value.trim(), location: f.location.value.trim(),
@@ -196,14 +274,14 @@ $('#workForm').addEventListener('submit', async (e)=>{
     completion: Math.max(0,Math.min(100,Number(f.completion.value)||0)), photos: []
   };
 
-  let coverPreviewDataURL = null;
+  // Miniaturas COMPRIMIDAS para preview/local cache
   const extrasFiles = [...f.extraFiles.files];
 
   if(!state.editingId){
     if(f.coverFile.files.length){
-      coverPreviewDataURL = await shrinkImage(f.coverFile.files[0]);
-      payload.cover = coverPreviewDataURL || '';
-      payload.photos.push({ src: coverPreviewDataURL || '', alt: payload.title+' (capa)', takenAt:new Date().toISOString() });
+      const coverThumb = await shrinkImage(f.coverFile.files[0]);
+      payload.cover = coverThumb || '';
+      payload.photos.push({ src: coverThumb || '', alt: payload.title+' (capa)', takenAt:new Date().toISOString() });
     } else { alert('Selecione a foto principal.'); return; }
   } else {
     const it=state.items.find(x=>x.id===state.editingId);
@@ -221,10 +299,15 @@ $('#workForm').addEventListener('submit', async (e)=>{
   if(idx>=0) state.items[idx]={...state.items[idx],...payload}; else state.items.push(payload);
   normalize(); safeSaveLocal(state.items); closeModal(); render();
 
+  // Envia ao backend
   try{
     const result = await sendToBackend(payload, f.coverFile.files[0] || null, extrasFiles);
-    if (result?.ok) { console.log('Backend OK:', result); }
-    else if (!result?.skipped) { console.warn('Backend retornou erro:', result); alert('Obra salva localmente. Não foi possível enviar ao Drive agora (veja o console).'); }
+    if (result?.ok) {
+      console.log('Backend OK:', result);
+    } else if (!result?.skipped) {
+      console.warn('Backend retornou erro:', result);
+      alert('Obra salva localmente. Não foi possível enviar ao Drive agora (veja o console).');
+    }
   }catch(err){
     console.error('Erro ao enviar para o backend:', err);
     alert('Obra salva localmente. Houve um problema ao enviar para o Drive (veja o console).');
@@ -245,7 +328,17 @@ $('#statusFilter').addEventListener('change',render);
 $('#searchInput').addEventListener('input',render);
 $('#btnTop').addEventListener('click',()=>window.scrollTo({top:0,behavior:'smooth'}));
 
-document.addEventListener('click',(e)=>{ if(e.target.id==='lightbox' || e.target.id==='modal'){ closeLightbox(); closeModal(); window.scrollTo({top:0,behavior:'smooth'}); }});
-document.addEventListener('keydown',(e)=>{ if(e.key==='Escape'){ closeLightbox(); closeModal(); } if(!$('#lightbox').hidden){ if(e.key==='ArrowRight') navLightbox(1); if(e.key==='ArrowLeft') navLightbox(-1); }});
+document.addEventListener('click',(e)=>{
+  if(e.target.id==='lightbox' || e.target.id==='modal'){
+    closeLightbox(); closeModal(); window.scrollTo({top:0,behavior:'smooth'});
+  }
+});
+document.addEventListener('keydown',(e)=>{
+  if(e.key==='Escape'){ closeLightbox(); closeModal(); }
+  if(!$('#lightbox').hidden){
+    if(e.key==='ArrowRight') navLightbox(1);
+    if(e.key==='ArrowLeft')  navLightbox(-1);
+  }
+});
 
 loadInitial();
