@@ -1,5 +1,5 @@
 /* ================== Portal de Obras — JS (frontend) ==================
-   - Busca do backend (Drive) com action=list
+   - Busca do backend (Drive) com action=list (links públicos)
    - Cache local leve (metadados + miniaturas comprimidas)
    - Envia JSON + arquivos (capa e extras) ao Apps Script Web App
    ------------------------------------------------------------------ */
@@ -16,7 +16,7 @@ const fmtDate = iso => iso ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium'
 const byCompletionDesc = (a,b) => (b.completion||0) - (a.completion||0);
 const byPhotoDateDesc  = (a,b) => new Date(b.takenAt||b.createdAt||0) - new Date(a.takenAt||a.createdAt||0);
 
-// Placeholder inline (evita 404)
+// Placeholder inline (evita 404 em produção/netlify)
 const PLACEHOLDER =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675">
@@ -24,15 +24,15 @@ const PLACEHOLDER =
   style="fill:#6c757d;font-family:Inter,Arial,sans-serif;font-size:28px">Sem imagem</text></svg>`);
 
 /* ========= BACKEND (Apps Script Web App) =========
-   Use exatamente os valores do seu deploy /exec e o MESMO SECRET do Code.gs. */
+   Troque pela URL /exec do seu deploy ATIVO e mantenha o mesmo SECRET do Code.gs
+   ------------------------------------------------ */
 const BACKEND = {
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbyzqq_Z3kt3ItXDMidlMPhKQdkly-GiQDqQxqyEOcO_rkDjHJgslg6ou1I_hmsjmBdLLw/exec',
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbzz0MCGiA43dfhfGiBtTfd6bqi3QcdAAKtJdDYlXyhJgRxxF21iqgbKEmlKYaN2iQOQig/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
+/* ================================================ */
 
 /* ===== utilidades ===== */
-
-// Comprime imagem para miniatura (dataURL) – poupa localStorage
 async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
   if (!file || !file.type?.startsWith('image/')) return null;
   const img = await new Promise((res, rej)=>{
@@ -46,13 +46,10 @@ async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
   canvas.getContext('2d').drawImage(img,0,0,w,h);
   return canvas.toDataURL('image/jpeg',quality);
 }
-
-// Arquivo -> dataURL (para fallback base64)
 function fileToDataURL(file){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
 }
 
-// Salva versão “leve” no localStorage (evita estourar quota)
 function safeSaveLocal(items){
   const lightweight = items.map(it=>{
     const photos=(it.photos||[]).slice(0,MAX_LOCAL_PHOTOS).map(p=>({
@@ -74,13 +71,21 @@ function safeSaveLocal(items){
     try{ localStorage.setItem(LS_KEY, JSON.stringify(minimal)); }catch{}
   }
 }
-
 function hydrateLocal(){ try{ const raw=localStorage.getItem(LS_KEY); if(raw) state.items=JSON.parse(raw);}catch{} }
 
-/* ===== busca remota (Drive via backend) ===== */
+/* ===== Helpers de rede ===== */
+function buildListUrl(){
+  // Usa URL API-safe (evita erros de ? e & duplicados)
+  const u = new URL(BACKEND.WEB_APP_URL);
+  u.searchParams.set('action','list');
+  u.searchParams.set('secret', BACKEND.SECRET);
+  u.searchParams.set('t', Date.now().toString()); // cache-buster
+  return u.toString();
+}
 async function fetchRemoteItems(){
-  const url = `${BACKEND.WEB_APP_URL}?action=list&secret=${encodeURIComponent(BACKEND.SECRET)}&t=${Date.now()}`;
-  const res = await fetch(url, { method:'GET', cache:'no-store' });
+  const url = buildListUrl();
+  console.log('[fetchRemoteItems] GET', url);
+  const res = await fetch(url, { method:'GET', redirect:'follow', cache:'no-store' });
   if (!res.ok) throw new Error('HTTP '+res.status);
   const json = await res.json();
   if (!json?.ok) throw new Error(json?.error||'backend_error');
@@ -92,7 +97,7 @@ async function loadInitial(){
   // 1) tenta remoto (Drive)
   try{
     const remote = await fetchRemoteItems();
-    if (Array.isArray(remote)){
+    if (Array.isArray(remote)) {
       state.items = remote.map(it=>({
         id: it.id, title: it.title, engineer: it.engineer, location: it.location,
         startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
@@ -213,15 +218,11 @@ function openModal(id=null){
 function closeModal(){ $('#modal').hidden=true; document.body.style.overflow=''; state.editingId=null; }
 
 /* ===== envio ao backend ===== */
-
-// 1) tentativa: envia arquivos reais (FormData)
-// 2) fallback: reenvia como campos *_b64 (base64) caso a 1ª falhe OU
-//    o backend retorne ok:true mas sem 'files' (bloqueios do GAS)
 async function sendToBackend(payload, coverFile, extraFiles=[]){
   if(!BACKEND.WEB_APP_URL || !BACKEND.SECRET) return {ok:false,skipped:true};
   const triedFilesCount=(coverFile?1:0)+extraFiles.length;
 
-  // tentativa com arquivos
+  // tentativa com arquivos (multipart)
   const form1=new FormData();
   form1.append('secret',BACKEND.SECRET);
   ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form1.append(k,payload[k]||''));
@@ -230,14 +231,17 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   extraFiles.forEach((f,i)=> form1.append(`extra${i}`, f, f.name||`foto_${String(i+1).padStart(2,'0')}.jpg`));
 
   try{
-    const res=await fetch(BACKEND.WEB_APP_URL,{method:'POST',body:form1});
+    const res=await fetch(BACKEND.WEB_APP_URL,{method:'POST',body:form1, redirect:'follow'});
     if(res.ok){
       const json=await res.json();
       if(triedFilesCount>0 && (!Array.isArray(json.files)||json.files.length===0)){
         // respondeu ok mas sem arquivos: força base64
+        console.warn('[sendToBackend] ok:true mas sem files; fallback base64');
         return await sendAsBase64(payload,coverFile,extraFiles);
       }
       return json;
+    } else {
+      console.warn('[sendToBackend] HTTP', res.status, res.statusText);
     }
   }catch(e){ console.warn('Falha upload arquivos',e); }
 
@@ -246,7 +250,6 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   // fallback base64
   return await sendAsBase64(payload,coverFile,extraFiles);
 }
-
 async function sendAsBase64(payload, coverFile, extraFiles){
   try{
     const form2=new FormData();
@@ -255,7 +258,7 @@ async function sendAsBase64(payload, coverFile, extraFiles){
     form2.append('completion', String(payload.completion||0));
     if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
     for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
-    const res2=await fetch(BACKEND.WEB_APP_URL,{method:'POST',body:form2});
+    const res2=await fetch(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'});
     if(res2.ok) return await res2.json();
     return {ok:false,error:'backend_failed_'+res2.status};
   }catch(e){ return {ok:false,error:String(e)}; }
@@ -309,6 +312,7 @@ $('#workForm').addEventListener('submit', async (e)=>{
   try{
     const result=await sendToBackend(payload,coverFileToSend,extrasFiles);
     if(result?.ok){
+      console.log('Backend OK:',result);
       try{
         const remote=await fetchRemoteItems();
         if(Array.isArray(remote)){
@@ -319,8 +323,7 @@ $('#workForm').addEventListener('submit', async (e)=>{
           }));
           normalize(); safeSaveLocal(state.items); fillYears(); render();
         }
-      }catch{}
-      console.log('Backend OK:',result);
+      }catch(err){ console.warn('Refresh remoto após envio falhou:', err); }
     }else if(!result?.skipped){
       console.warn('Backend erro:',result);
       alert('Obra salva localmente. Não foi possível enviar ao Drive agora (veja o console).');
