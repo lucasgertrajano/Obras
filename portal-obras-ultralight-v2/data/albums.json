@@ -1,0 +1,58 @@
+[
+  {
+    "id": "obra-1",
+    "title": "Obra 1 — Praça Central",
+    "engineer": "Ana Lima",
+    "location": "Centro, Mamanguape - PB",
+    "startDate": "2025-04-21",
+    "endDate": "2025-10-25",
+    "status": "Em andamento",
+    "completion": 82,
+    "cover": "./images/obra1_1.jpg",
+    "photos": [
+      {
+        "src": "./images/obra1_1.jpg",
+        "alt": "Obra 1 1",
+        "takenAt": "2025-08-17T01:53:53"
+      },
+      {
+        "src": "./images/obra1_2.jpg",
+        "alt": "Obra 1 2",
+        "takenAt": "2025-08-14T01:53:53"
+      },
+      {
+        "src": "./images/obra1_3.jpg",
+        "alt": "Obra 1 3",
+        "takenAt": "2025-08-11T01:53:53"
+      }
+    ]
+  },
+  {
+    "id": "obra-2",
+    "title": "Obra 2 — Ginásio",
+    "engineer": "Carlos Souza",
+    "location": "Bairro Norte, Mamanguape - PB",
+    "startDate": "2025-04-19",
+    "endDate": "2025-10-30",
+    "status": "Paralisada",
+    "completion": 40,
+    "cover": "./images/obra2_1.jpg",
+    "photos": [
+      {
+        "src": "./images/obra2_1.jpg",
+        "alt": "Obra 2 1",
+        "takenAt": "2025-08-16T01:53:53"
+      },
+      {
+        "src": "./images/obra2_2.jpg",
+        "alt": "Obra 2 2",
+        "takenAt": "2025-08-13T01:53:53"
+      },
+      {
+        "src": "./images/obra2_3.jpg",
+        "alt": "Obra 2 3",
+        "takenAt": "2025-08-10T01:53:53"
+      }
+    ]
+  }
+]

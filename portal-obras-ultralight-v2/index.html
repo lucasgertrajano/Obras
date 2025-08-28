@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portal de Obras</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <!-- Google API JS -->
+  <script src="https://apis.google.com/js/api.js"></script>
+</head>
+<body>
+
+  <!-- Mantido no HTML; CSS pode ocultar em album-open -->
+  <header class="appbar">
+    <div class="container appbar__row">
+      <div class="brand">
+        <img src="assets/logo.png" class="brand__logo" alt="Logomarca">
+        <div class="brand__text">
+          <h1>Portal de Obras</h1>
+          <p>Administração Municipal</p>
+        </div>
+      </div>
+      <div style="display:flex; gap:.5rem; align-items:center">
+        <button id="btnDrive" class="btn ghost" title="Conectar ao Google Drive">Conectar Drive</button>
+        <button id="btnNew" class="btn primary">Nova obra</button>
+      </div>
+    </div>
+    <div class="palette"></div>
+  </header>
+
+  <nav class="toolbar">
+    <div class="container toolbar__row">
+      <div class="filters">
+        <select id="yearFilter" class="control"><option value="all">Todos os anos</option></select>
+        <select id="statusFilter" class="control">
+          <option value="all">Todos os status</option>
+          <option>Planejada</option><option>Iniciada</option><option>Em andamento</option>
+          <option>Paralisada</option><option>Concluída</option>
+        </select>
+        <input id="searchInput" class="control" type="search" placeholder="Buscar por obra, engenheiro ou local...">
+      </div>
+      <button id="btnTop" class="btn ghost">Topo</button>
+    </div>
+  </nav>
+
+  <main class="container">
+    <section id="timeline" class="timeline"></section>
+    <div id="empty" class="empty" hidden>
+      <h3>Nada encontrado</h3><p>Ajuste filtros ou a busca.</p>
+    </div>
+  </main>
+
+  <footer class="footer"><div class="container">
+    <small>Troque as imagens em <code>/images</code> e edite <code>/data/albums.json</code>. Alterações via formulário são salvas no <code>localStorage</code>. Se “Conectar Drive”, os dados também serão enviados ao Google Drive.</small>
+  </div></footer>
+
+  <!-- Modal -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal__dialog" role="dialog" aria-modal="true">
+      <button id="modalClose" class="modal__close" aria-label="Fechar">×</button>
+      <h3 id="modalTitle">Nova obra</h3>
+      <form id="workForm" class="form">
+        <div class="grid">
+          <label>Nome da obra<input name="title" required></label>
+          <label>Engenheiro responsável<input name="engineer" required></label>
+          <label>Local da obra<input name="location" required></label>
+          <label>Início<input name="startDate" type="date" required></label>
+          <label>Término previsto<input name="endDate" type="date" required></label>
+          <label>Status
+            <select name="status" required>
+              <option>Planejada</option><option>Iniciada</option><option>Em andamento</option>
+              <option>Paralisada</option><option>Concluída</option>
+            </select>
+          </label>
+          <label>% Concluída<input name="completion" type="number" min="0" max="100" value="0" required></label>
+        </div>
+        <div class="form__files">
+          <label>Foto principal<input name="coverFile" type="file" accept="image/*" capture="environment"></label>
+          <label>Fotos adicionais<input name="extraFiles" type="file" accept="image/*" multiple capture="environment"></label>
+        </div>
+        <div class="form__actions">
+          <button type="button" id="cancel" class="btn ghost">Cancelar</button>
+          <button type="submit" class="btn primary">Salvar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div id="lightbox" class="lightbox" hidden>
+    <div class="lightbox__panel">
+      <figure class="lightbox__figure">
+        <img id="lbImg" alt="">
+        <figcaption class="lb__meta">
+          <h4 id="lbTitle"></h4>
+          <div id="lbInfo" class="lb__info"></div>
+          <small id="lbDate"></small>
+        </figcaption>
+      </figure>
+      <div id="thumbs" class="thumbs"></div>
+      <div class="lightbox__actions">
+        <button id="lbPrev" class="btn ghost">◀</button>
+        <button id="lbNext" class="btn ghost">▶</button>
+        <button id="lbClose" class="btn">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <template id="tplCard">
+    <article class="card reveal">
+      <button class="card__media" data-action="open-album" aria-label="Abrir álbum">
+        <img class="card__img" alt=""><span class="overlay"></span><span class="badge"></span>
+      </button>
+      <div class="card__body">
+        <h3 class="title"></h3><p class="sub"></p>
+        <div class="rows">
+          <div><strong>Local:</strong> <span class="loc"></span></div>
+          <div><strong>Início:</strong> <time class="start"></time></div>
+          <div><strong>Término:</strong> <time class="end"></time></div>
+        </div>
+        <div class="card__actions">
+          <button class="btn ghost small" data-action="open-album">Abrir álbum</button>
+          <button class="btn small" data-action="edit">Editar</button>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <script src="script.js" defer></script>
+</body>
+</html>

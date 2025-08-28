@@ -1,0 +1,54 @@
+/* Refined, light theme fixed; better logo/text alignment */
+:root{--ink:#0f172a;--ink2:#334155;--ink3:#475569;--bg:#f7fafc;--panel:#ffffff;--border:#e2e8f0;
+--brand:#0B55FF;--purple:#5B21B6;--amber:#F59E0B;--lime:#A3E635;--magenta:#FF2E8C;--cyan:#3DD5F3;}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Arial;background:var(--bg);color:var(--ink)}
+.container{max-width:1100px;margin:0 auto;padding:0 1rem}
+.appbar{position:sticky;top:0;z-index:40;background:#fff;border-bottom:1px solid var(--border)}
+.appbar__row{display:flex;align-items:center;justify-content:space-between;padding:.6rem 0}
+.brand{display:flex;align-items:center;gap:.7rem}
+.brand__logo{width:40px;height:40px;border-radius:50%;box-shadow:0 6px 16px rgba(11,85,255,.15);object-fit:cover}
+.brand__text h1{margin:0;font-size:clamp(1rem,2.6vw,1.35rem)}
+.brand__text p{margin:0;color:var(--ink3);font-size:.9rem}
+.palette{height:8px;background:linear-gradient(90deg,var(--purple),var(--amber),var(--lime),var(--magenta),var(--cyan),var(--brand))}
+.toolbar{position:sticky;top:64px;z-index:30;background:#fff;border-bottom:1px solid var(--border)}
+.toolbar__row{display:flex;justify-content:space-between;align-items:center;padding:.55rem 0;gap:.6rem}
+.filters{display:flex;flex-wrap:wrap;gap:.6rem}
+.control{border:1px solid var(--border);background:#fff;border-radius:12px;padding:.5rem .75rem;min-height:38px}
+.btn{border:1px solid var(--brand);background:var(--brand);color:#fff;border-radius:12px;padding:.5rem .9rem;cursor:pointer;box-shadow:0 6px 16px rgba(11,85,255,.18)}
+.btn.ghost{background:transparent;color:var(--brand)}
+.btn.small{padding:.33rem .6rem;font-size:.9rem}
+.timeline{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;margin:1rem 0 2rem}
+@media(max-width:900px){.timeline{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 10px 24px rgba(2,8,23,.06)}
+.card__media{position:relative;display:block;border:0;padding:0;width:100%;cursor:pointer;background:#000}
+.card__img{width:100%;height:260px;object-fit:cover;display:block}
+.overlay{position:absolute;inset:0;background:#000;opacity:0;transition:opacity .2s}
+.badge{position:absolute;left:10px;top:10px;background:#111827cc;color:#fff;border-radius:999px;padding:.25rem .6rem;font-size:.78rem}
+.card__body{padding:1rem}
+.title{margin:.2rem 0 .1rem;font-size:1.05rem}
+.sub{margin:0;color:var(--ink3)}
+.rows{display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;margin:.6rem 0}
+.rows div{color:var(--ink2);font-size:.92rem}
+.card__actions{display:flex;justify-content:space-between;gap:.6rem;margin-top:.6rem}
+.modal{position:fixed;inset:0;background:rgba(2,6,23,.55);display:grid;place-items:center;padding:1rem}
+.modal[hidden]{display:none}.modal__dialog{width:min(780px,96vw);background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:0 16px 40px rgba(2,8,23,.35);padding:1rem}
+.modal__close{position:absolute;right:calc(2% + 6px);top:calc(64px + 12px);background:#fff;border:1px solid var(--border);border-radius:999px;width:38px;height:38px;cursor:pointer}
+.form .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:.7rem}.form label{display:grid;gap:.25rem;font-size:.92rem}
+.form input,.form select{border:1px solid var(--border);border-radius:10px;padding:.5rem .6rem}.form__files{display:grid;gap:.5rem;margin-top:.5rem}
+.form__actions{display:flex;justify-content:flex-end;gap:.6rem;margin-top:.8rem}
+@media(max-width:760px){.form .grid{grid-template-columns:1fr}}
+.lightbox{position:fixed;inset:0;background:rgba(2,6,23,.8);display:grid;place-items:center;padding:1rem}
+.lightbox[hidden]{display:none}.lightbox__panel{width:min(1100px,96vw);background:#0b1220;border:1px solid rgba(255,255,255,.1);border-radius:16px;overflow:hidden;color:#e5e7eb}
+.lightbox__figure{margin:0}.lightbox__figure img{display:block;width:100%;max-height:62vh;object-fit:contain;background:#000}
+.lb__meta{padding:1rem}.lb__info{display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;color:#cbd5e1;font-size:.9rem}
+@media(max-width:760px){.lb__info{grid-template-columns:1fr}}.thumbs{display:flex;gap:.5rem;overflow:auto;padding:.6rem;background:#0b1220}
+.thumbs button{flex:0 0 auto;border:2px solid transparent;border-radius:10px;overflow:hidden;background:#0b1220;cursor:pointer}
+.thumbs img{display:block;width:110px;height:72px;object-fit:cover}.thumbs button.active{border-color:#0B55FF}
+.lightbox__actions{display:flex;justify-content:space-between;gap:.6rem;padding:.6rem;border-top:1px solid rgba(255,255,255,.08)}
+.reveal{opacity:0;transform:translateY(10px);transition:opacity .5s, transform .5s}.reveal.visible{opacity:1;transform:none}
+.footer{border-top:1px solid var(--border);padding:1rem 0;color:var(--ink3);background:#fff}
+/* Oculta header e toolbar quando o lightbox estiver ativo */
+body.album-open header.appbar,
+body.album-open nav.toolbar {
+  display: none;
+}
