@@ -27,6 +27,7 @@ const PLACEHOLDER =
    Troque pela URL /exec do seu deploy ATIVO e mantenha o mesmo SECRET do Code.gs
    ------------------------------------------------ */
 const BACKEND = {
+  // >>>>> ATUALIZE AQUI COM A SUA URL /exec ATIVA
   WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbzz0MCGiA43dfhfGiBtTfd6bqi3QcdAAKtJdDYlXyhJgRxxF21iqgbKEmlKYaN2iQOQig/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
@@ -82,10 +83,23 @@ function buildListUrl(){
   u.searchParams.set('t', Date.now().toString()); // cache-buster
   return u.toString();
 }
+
+/** fetch com timeout simples (evita travar indefinidamente) */
+async function fetchWithTimeout(resource, options = {}, timeoutMs = 10000){
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try{
+    const res = await fetch(resource, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 async function fetchRemoteItems(){
   const url = buildListUrl();
   console.log('[fetchRemoteItems] GET', url);
-  const res = await fetch(url, { method:'GET', redirect:'follow', cache:'no-store' });
+  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 10000);
   if (!res.ok) throw new Error('HTTP '+res.status);
   const json = await res.json();
   if (!json?.ok) throw new Error(json?.error||'backend_error');
@@ -231,7 +245,7 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   extraFiles.forEach((f,i)=> form1.append(`extra${i}`, f, f.name||`foto_${String(i+1).padStart(2,'0')}.jpg`));
 
   try{
-    const res=await fetch(BACKEND.WEB_APP_URL,{method:'POST',body:form1, redirect:'follow'});
+    const res=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form1, redirect:'follow'}, 15000);
     if(res.ok){
       const json=await res.json();
       if(triedFilesCount>0 && (!Array.isArray(json.files)||json.files.length===0)){
@@ -258,7 +272,7 @@ async function sendAsBase64(payload, coverFile, extraFiles){
     form2.append('completion', String(payload.completion||0));
     if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
     for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
-    const res2=await fetch(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'});
+    const res2=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'}, 30000);
     if(res2.ok) return await res2.json();
     return {ok:false,error:'backend_failed_'+res2.status};
   }catch(e){ return {ok:false,error:String(e)}; }
