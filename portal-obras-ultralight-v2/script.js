@@ -1,8 +1,8 @@
 /* ================== Portal de Obras — JS (frontend) ==================
-   - Lista rápida do backend (links públicos)  ➜ tela carrega leve
-   - Álbum completo carregado SOB DEMANDA ao abrir a obra
-   - Cache local leve (metadados + miniaturas comprimidas)
-   - Envio de JSON + arquivos (multipart) com fallback base64
+   - Busca rápida do backend (manifesto em cache no Apps Script)
+   - Fallback para cache local se o backend demorar (>6s)
+   - Envio com multipart + fallback base64
+   - Imagens com loading="lazy" + decoding="async"
    ------------------------------------------------------------------ */
 
 const $  = s => document.querySelector(s);
@@ -17,20 +17,19 @@ const fmtDate = iso => iso ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium'
 const byCompletionDesc = (a,b) => (b.completion||0) - (a.completion||0);
 const byPhotoDateDesc  = (a,b) => new Date(b.takenAt||b.createdAt||0) - new Date(a.takenAt||a.createdAt||0);
 
-// Placeholder inline (evita 404 em prod)
+// Placeholder inline
 const PLACEHOLDER =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675">
   <rect width="100%" height="100%" fill="#e9ecef"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
   style="fill:#6c757d;font-family:Inter,Arial,sans-serif;font-size:28px">Sem imagem</text></svg>`);
 
-/* ========= BACKEND (Apps Script Web App) =========
-   >>> Troque a URL abaixo pela sua /exec ativa e mantenha o SECRET igual ao Code.gs */
+/* ========= BACKEND =========
+   Coloque aqui a URL /exec do SEU deploy ativo */
 const BACKEND = {
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbwBvCsLqhZcHhqxaXdlK6XQvfYyfrIRlAt_ocP2lWnq_gWSI-DYcRzrm_6ZB-_bMUxKYA/exec',
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbzRGtwnbko5nSITqDi8Y29Lh-WtwgYjpjVokUaxYYkSr0H9miWjKP-8Eqp7B3pB5PbB-A/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
-/* ================================================ */
 
 /* ===== utilidades ===== */
 async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
@@ -49,7 +48,6 @@ async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
 function fileToDataURL(file){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
 }
-
 function safeSaveLocal(items){
   const lightweight = items.map(it=>{
     const photos=(it.photos||[]).slice(0,MAX_LOCAL_PHOTOS).map(p=>({
@@ -74,63 +72,70 @@ function safeSaveLocal(items){
 function hydrateLocal(){ try{ const raw=localStorage.getItem(LS_KEY); if(raw) state.items=JSON.parse(raw);}catch{} }
 
 /* ===== Helpers de rede ===== */
-function buildUrl(params){
+function buildListUrl(){
   const u = new URL(BACKEND.WEB_APP_URL);
-  Object.entries(params).forEach(([k,v])=>u.searchParams.set(k,String(v)));
+  u.searchParams.set('action','list');
   u.searchParams.set('secret', BACKEND.SECRET);
-  u.searchParams.set('t', Date.now().toString()); // cache-buster
+  u.searchParams.set('t', Date.now().toString());
   return u.toString();
 }
-
-/** fetch com timeout */
-async function fetchWithTimeout(resource, options = {}, timeoutMs = 10000){
+async function fetchWithTimeout(resource, options = {}, timeoutMs = 6000){
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try{
-    const res = await fetch(resource, { ...options, signal: controller.signal });
-    return res;
+    return await fetch(resource, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(id);
   }
 }
-
-async function fetchList(){
-  const url = buildUrl({ action:'list' });
-  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 10000);
+async function fetchRemoteItems(){
+  const url = buildListUrl();
+  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 6000);
   if (!res.ok) throw new Error('HTTP '+res.status);
   const json = await res.json();
   if (!json?.ok) throw new Error(json?.error||'backend_error');
   return json.items || [];
 }
-async function fetchAlbum(folderId){
-  const url = buildUrl({ action:'album', id:folderId });
-  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 15000);
-  if (!res.ok) throw new Error('HTTP '+res.status);
-  const json = await res.json();
-  if (!json?.ok) throw new Error(json?.error||'backend_error');
-  return json.photos || [];
-}
 
 /* ===== carga inicial ===== */
 async function loadInitial(){
+  // 1) Tenta backend rapidamente
+  let usedRemote = false;
   try{
-    const remote = await fetchList();
+    const remote = await fetchRemoteItems();
     if (Array.isArray(remote)) {
       state.items = remote.map(it=>({
         id: it.id, title: it.title, engineer: it.engineer, location: it.location,
         startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
         cover: it.cover || '',
-        photos: [] // álbum completo só on-demand
+        photos: (it.photos||[]).map(p=>({src:p.src, alt:p.alt||it.title, takenAt:p.takenAt}))
       }));
-      normalize(); safeSaveLocal(state.items); fillYears(); render();
-      return;
+      usedRemote = true;
     }
   }catch(err){
-    console.warn('Falha ao carregar do backend, caindo para cache local:', err);
+    console.warn('Backend lento/indisponível. Usando cache local.', err);
   }
 
-  // offline / sem remoto
-  hydrateLocal(); normalize(); fillYears(); render();
+  if (!usedRemote) hydrateLocal();
+  normalize(); fillYears(); render();
+
+  // 2) Se caiu no cache, tenta atualizar em background
+  if (!usedRemote) {
+    try{
+      const remote = await fetchRemoteItems();
+      if (Array.isArray(remote)) {
+        state.items = remote.map(it=>({
+          id: it.id, title: it.title, engineer: it.engineer, location: it.location,
+          startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
+          cover: it.cover || '',
+          photos: (it.photos||[]).map(p=>({src:p.src, alt:p.alt||it.title, takenAt:p.takenAt}))
+        }));
+        normalize(); safeSaveLocal(state.items); fillYears(); render();
+      }
+    }catch(e){}
+  } else {
+    safeSaveLocal(state.items);
+  }
 }
 
 /* ===== normalização e filtros ===== */
@@ -164,9 +169,10 @@ function render(){
   state.filtered.forEach((it, idx)=>{
     const n=tpl.content.cloneNode(true);
     const img=n.querySelector('.card__img');
-    img.src = it.cover || PLACEHOLDER;
+    img.src = it.cover || it.photos?.[0]?.src || PLACEHOLDER;
     img.alt = it.title || 'Obra';
     img.loading = 'lazy';
+    img.decoding = 'async';
 
     n.querySelector('.overlay').style.opacity = Math.min(1, Math.max(0, (it.completion||0)/100));
     n.querySelector('.badge').textContent = `${it.status||'—'} • ${it.completion||0}%`;
@@ -192,65 +198,17 @@ function reveal(){
 }
 
 /* ===== Álbum ===== */
-async function ensureAlbumLoaded(filteredIndex){
-  const it = state.filtered[filteredIndex];
-  if (!it) return;
-  // se já tem fotos carregadas, ok
-  if (Array.isArray(it.photos) && it.photos.length) return;
-
-  try{
-    const all = await fetchAlbum(it.id);
-    // mapeia e ordena
-    it.photos = (all||[]).map(p=>({
-      src: p.src || PLACEHOLDER,
-      alt: p.alt || it.title || '',
-      takenAt: p.takenAt || new Date().toISOString()
-    })).sort(byPhotoDateDesc);
-
-    // propaga para state.items (pelo id)
-    const idx = state.items.findIndex(x=>x.id===it.id);
-    if (idx >= 0) state.items[idx].photos = it.photos.slice();
-
-    // salva cache leve
-    safeSaveLocal(state.items);
-  }catch(err){
-    console.warn('Falha ao carregar álbum:', err);
-    it.photos = it.photos || [];
-  }
-}
-
-async function openAlbum(filteredIndex){
-  const it = state.filtered[filteredIndex]; if(!it) return;
-
-  // feedback de loading no lightbox antes de buscar
-  $('#lbImg').src = PLACEHOLDER;
-  $('#lbTitle').textContent = it.title || 'Sem título';
-  $('#lbInfo').innerHTML = `
-    <div><strong>Engenheiro:</strong> ${it.engineer||'—'}</div>
-    <div><strong>Local:</strong> ${it.location||'—'}</div>
-    <div><strong>Status:</strong> ${it.status||'—'} • ${it.completion||0}%</div>
-    <div><strong>Início:</strong> ${it.startDate?fmtDate(it.startDate):'—'}</div>
-    <div><strong>Prev. Término:</strong> ${it.endDate?fmtDate(it.endDate):'—'}</div>`;
-  $('#lbDate').textContent = '';
-  $('#thumbs').innerHTML = '<div style="padding:12px;color:#6c757d">Carregando fotos…</div>';
-
+function openAlbum(filteredIndex){
+  const it=state.filtered[filteredIndex]; if(!it || !(it.photos||[]).length) return;
   state.lb.albumIndex=filteredIndex; state.lb.photoIndex=0;
-  $('#lightbox').hidden=false; document.body.style.overflow='hidden'; document.body.classList.add('album-open');
-
-  // carrega as fotos se necessário
-  await ensureAlbumLoaded(filteredIndex);
   renderLightbox();
+  $('#lightbox').hidden=false; document.body.style.overflow='hidden'; document.body.classList.add('album-open');
 }
-
 function renderLightbox(){
-  const it=state.filtered[state.lb.albumIndex]; if(!it) return;
-  if (!Array.isArray(it.photos) || !it.photos.length){
-    $('#lbImg').src = PLACEHOLDER;
-    $('#thumbs').innerHTML = '<div style="padding:12px;color:#6c757d">Sem fotos.</div>';
-    return;
-  }
-  const p=it.photos[state.lb.photoIndex];
+  const it=state.filtered[state.lb.albumIndex]; const p=it.photos[state.lb.photoIndex];
   $('#lbImg').src=p.src || PLACEHOLDER;
+  $('#lbImg').loading = 'lazy';
+  $('#lbImg').decoding = 'async';
   $('#lbTitle').textContent=it.title || 'Sem título';
   $('#lbInfo').innerHTML = `
     <div><strong>Engenheiro:</strong> ${it.engineer||'—'}</div>
@@ -263,18 +221,15 @@ function renderLightbox(){
   it.photos.forEach((ph,i)=>{
     const b=document.createElement('button'); b.className='thumb'+(i===state.lb.photoIndex?' active':'');
     const im=document.createElement('img'); im.src=ph.src || PLACEHOLDER; im.alt=ph.alt||it.title||'';
-    im.loading = 'lazy';
+    im.loading = 'lazy'; im.decoding = 'async';
     b.appendChild(im); b.addEventListener('click',()=>{ state.lb.photoIndex=i; renderLightbox();});
     th.appendChild(b);
   });
 }
 function closeLightbox(){ $('#lightbox').hidden=true; document.body.style.overflow=''; document.body.classList.remove('album-open'); }
-function navLightbox(d){
-  const it=state.filtered[state.lb.albumIndex]; if(!it || !it.photos?.length) return;
-  const n=it.photos.length; state.lb.photoIndex=(state.lb.photoIndex+d+n)%n; renderLightbox();
-}
+function navLightbox(d){ const it=state.filtered[state.lb.albumIndex]; const n=it.photos.length; state.lb.photoIndex=(state.lb.photoIndex+d+n)%n; renderLightbox(); }
 
-/* ===== Modal ===== */
+/* ===== Modal (CRUD local + envio) ===== */
 function openModal(id=null){
   $('#modal').hidden=false; document.body.style.overflow='hidden';
   $('#modalTitle').textContent=id?'Editar obra':'Nova obra'; state.editingId=id;
@@ -295,7 +250,6 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   if(!BACKEND.WEB_APP_URL || !BACKEND.SECRET) return {ok:false,skipped:true};
   const triedFilesCount=(coverFile?1:0)+extraFiles.length;
 
-  // tentativa com arquivos (multipart)
   const form1=new FormData();
   form1.append('secret',BACKEND.SECRET);
   ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form1.append(k,payload[k]||''));
@@ -308,7 +262,6 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
     if(res.ok){
       const json=await res.json();
       if(triedFilesCount>0 && (!Array.isArray(json.files)||json.files.length===0)){
-        // ok mas sem files -> tenta base64
         console.warn('[sendToBackend] ok:true mas sem files; fallback base64');
         return await sendAsBase64(payload,coverFile,extraFiles);
       }
@@ -319,8 +272,6 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   }catch(e){ console.warn('Falha upload arquivos',e); }
 
   if(triedFilesCount===0) return {ok:false,error:'upload_skipped_no_files'};
-
-  // fallback base64
   return await sendAsBase64(payload,coverFile,extraFiles);
 }
 async function sendAsBase64(payload, coverFile, extraFiles){
@@ -376,22 +327,21 @@ $('#workForm').addEventListener('submit', async (e)=>{
   }
   payload.photos.sort(byPhotoDateDesc);
 
-  // atualiza UI + cache (instantâneo)
   const idx=state.items.findIndex(x=>x.id===payload.id);
   if(idx>=0) state.items[idx]={...state.items[idx],...payload}; else state.items.push(payload);
   normalize(); safeSaveLocal(state.items); closeModal(); render();
 
-  // envia e, se ok, recarrega a lista (cobertura/links públicos atualizados)
   try{
     const result=await sendToBackend(payload,coverFileToSend,extrasFiles);
     if(result?.ok){
+      // Atualiza do backend para obter URLs públicas
       try{
-        const remote=await fetchList();
+        const remote=await fetchRemoteItems();
         if(Array.isArray(remote)){
           state.items=remote.map(it=>({
             id:it.id,title:it.title,engineer:it.engineer,location:it.location,
             startDate:it.startDate,endDate:it.endDate,status:it.status,completion:it.completion,
-            cover:it.cover||'', photos:[]
+            cover:it.cover||'', photos:(it.photos||[]).map(p=>({src:p.src,alt:p.alt||it.title,takenAt:p.takenAt}))
           }));
           normalize(); safeSaveLocal(state.items); fillYears(); render();
         }
