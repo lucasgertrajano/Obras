@@ -1,8 +1,7 @@
 /* ================== Portal de Obras — JS (frontend) ==================
-   - Busca rápida do backend (manifesto em cache no Apps Script)
-   - Fallback para cache local se o backend demorar (>6s)
-   - Envio com multipart + fallback base64
-   - Imagens com loading="lazy" + decoding="async"
+   - Busca do backend (Drive) com action=list (via proxy de imagem)
+   - Cache local leve (metadados + miniaturas comprimidas)
+   - Envia JSON + arquivos (capa e extras) ao Apps Script Web App
    ------------------------------------------------------------------ */
 
 const $  = s => document.querySelector(s);
@@ -24,10 +23,9 @@ const PLACEHOLDER =
   <rect width="100%" height="100%" fill="#e9ecef"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
   style="fill:#6c757d;font-family:Inter,Arial,sans-serif;font-size:28px">Sem imagem</text></svg>`);
 
-/* ========= BACKEND =========
-   Coloque aqui a URL /exec do SEU deploy ativo */
+/* ========= BACKEND ========= */
 const BACKEND = {
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbz_Q392Kp3CqZAtnmK1KVPxi6OaaAjR8NBFfTgtLTG-bu8wsBVhlDRK9fnQ3BdzdWXHcA/exec',
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbw7_rjr1BgTrO6LBAWroZ1isp92M84nqTxrBBiqWVPCan57DGgonP_hh1RD10pF5zStPA/exec', // <<<<< COLE A URL /exec do seu deploy
   SECRET:      'OBRAS_2025_PROD'
 };
 
@@ -48,9 +46,11 @@ async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
 function fileToDataURL(file){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
 }
+
 function safeSaveLocal(items){
   const lightweight = items.map(it=>{
     const photos=(it.photos||[]).slice(0,MAX_LOCAL_PHOTOS).map(p=>({
+      // guardo só thumbs em base64 no cache para não estourar quota
       src: (p.src && p.src.startsWith('data:')) ? p.src : '',
       alt: p.alt||'',
       takenAt: p.takenAt || new Date().toISOString()
@@ -79,63 +79,55 @@ function buildListUrl(){
   u.searchParams.set('t', Date.now().toString());
   return u.toString();
 }
-async function fetchWithTimeout(resource, options = {}, timeoutMs = 6000){
+function buildImageUrl(fileId){
+  // usa o proxy do Apps Script para servir imagem mesmo em aba anônima
+  const u = new URL(BACKEND.WEB_APP_URL);
+  u.searchParams.set('action','image');
+  u.searchParams.set('id', fileId);
+  u.searchParams.set('t', Date.now().toString()); // evita cache agressivo do navegador
+  return u.toString();
+}
+async function fetchWithTimeout(resource, options = {}, timeoutMs = 10000){
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try{
-    return await fetch(resource, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(id);
-  }
+    const res = await fetch(resource, { ...options, signal: controller.signal });
+    return res;
+  } finally { clearTimeout(id); }
 }
+
 async function fetchRemoteItems(){
   const url = buildListUrl();
-  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 6000);
+  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 10000);
   if (!res.ok) throw new Error('HTTP '+res.status);
   const json = await res.json();
   if (!json?.ok) throw new Error(json?.error||'backend_error');
-  return json.items || [];
+
+  // Mapeia cover e fotos para usar SEMPRE o proxy
+  return (json.items || []).map(it => {
+    const photos = (it.photos||[]).map(p => ({
+      src: buildImageUrl(p.id),
+      alt: p.alt || it.title || '',
+      takenAt: p.takenAt
+    }));
+    const cover = it.coverId ? buildImageUrl(it.coverId) : (photos[0]?.src || '');
+    return { ...it, cover, photos };
+  });
 }
 
 /* ===== carga inicial ===== */
 async function loadInitial(){
-  // 1) Tenta backend rapidamente
-  let usedRemote = false;
   try{
-    const remote = await fetchRemoteItems();
+    const remote = await fetchRemoteItems();    // agora imagens vêm pelo proxy
     if (Array.isArray(remote)) {
-      state.items = remote.map(it=>({
-        id: it.id, title: it.title, engineer: it.engineer, location: it.location,
-        startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
-        cover: it.cover || '',
-        photos: (it.photos||[]).map(p=>({src:p.src, alt:p.alt||it.title, takenAt:p.takenAt}))
-      }));
-      usedRemote = true;
+      state.items = remote;
+      normalize(); safeSaveLocal(state.items); fillYears(); render();
+      return;
     }
   }catch(err){
-    console.warn('Backend lento/indisponível. Usando cache local.', err);
+    console.warn('Falha ao carregar do backend, caindo para cache local:', err);
   }
-
-  if (!usedRemote) hydrateLocal();
-  normalize(); fillYears(); render();
-
-  // 2) Se caiu no cache, tenta atualizar em background
-  if (!usedRemote) {
-    try{
-      const remote = await fetchRemoteItems();
-      if (Array.isArray(remote)) {
-        state.items = remote.map(it=>({
-          id: it.id, title: it.title, engineer: it.engineer, location: it.location,
-          startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
-          cover: it.cover || '',
-          photos: (it.photos||[]).map(p=>({src:p.src, alt:p.alt||it.title, takenAt:p.takenAt}))
-        }));
-        normalize(); safeSaveLocal(state.items); fillYears(); render();
-      }
-    }catch(e){}
-  } else {
-    safeSaveLocal(state.items);
-  }
+  hydrateLocal(); normalize(); fillYears(); render();
 }
 
 /* ===== normalização e filtros ===== */
@@ -171,7 +163,7 @@ function render(){
     const img=n.querySelector('.card__img');
     img.src = it.cover || it.photos?.[0]?.src || PLACEHOLDER;
     img.alt = it.title || 'Obra';
-    img.loading = 'lazy';
+    img.loading = 'lazy';   // melhora o tempo de carregamento
     img.decoding = 'async';
 
     n.querySelector('.overlay').style.opacity = Math.min(1, Math.max(0, (it.completion||0)/100));
@@ -207,8 +199,6 @@ function openAlbum(filteredIndex){
 function renderLightbox(){
   const it=state.filtered[state.lb.albumIndex]; const p=it.photos[state.lb.photoIndex];
   $('#lbImg').src=p.src || PLACEHOLDER;
-  $('#lbImg').loading = 'lazy';
-  $('#lbImg').decoding = 'async';
   $('#lbTitle').textContent=it.title || 'Sem título';
   $('#lbInfo').innerHTML = `
     <div><strong>Engenheiro:</strong> ${it.engineer||'—'}</div>
@@ -221,7 +211,7 @@ function renderLightbox(){
   it.photos.forEach((ph,i)=>{
     const b=document.createElement('button'); b.className='thumb'+(i===state.lb.photoIndex?' active':'');
     const im=document.createElement('img'); im.src=ph.src || PLACEHOLDER; im.alt=ph.alt||it.title||'';
-    im.loading = 'lazy'; im.decoding = 'async';
+    im.loading='lazy'; im.decoding='async';
     b.appendChild(im); b.addEventListener('click',()=>{ state.lb.photoIndex=i; renderLightbox();});
     th.appendChild(b);
   });
@@ -229,7 +219,7 @@ function renderLightbox(){
 function closeLightbox(){ $('#lightbox').hidden=true; document.body.style.overflow=''; document.body.classList.remove('album-open'); }
 function navLightbox(d){ const it=state.filtered[state.lb.albumIndex]; const n=it.photos.length; state.lb.photoIndex=(state.lb.photoIndex+d+n)%n; renderLightbox(); }
 
-/* ===== Modal (CRUD local + envio) ===== */
+/* ===== Modal ===== */
 function openModal(id=null){
   $('#modal').hidden=false; document.body.style.overflow='hidden';
   $('#modalTitle').textContent=id?'Editar obra':'Nova obra'; state.editingId=id;
@@ -262,8 +252,15 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
     if(res.ok){
       const json=await res.json();
       if(triedFilesCount>0 && (!Array.isArray(json.files)||json.files.length===0)){
-        console.warn('[sendToBackend] ok:true mas sem files; fallback base64');
-        return await sendAsBase64(payload,coverFile,extraFiles);
+        // respondeu ok mas sem arquivos: força base64
+        const form2=new FormData();
+        form2.append('secret',BACKEND.SECRET);
+        ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form2.append(k,payload[k]||''));
+        form2.append('completion', String(payload.completion||0));
+        if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
+        for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
+        const res2=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'}, 30000);
+        return res2.ok ? await res2.json() : {ok:false,error:'backend_failed_'+res2.status};
       }
       return json;
     } else {
@@ -272,20 +269,16 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   }catch(e){ console.warn('Falha upload arquivos',e); }
 
   if(triedFilesCount===0) return {ok:false,error:'upload_skipped_no_files'};
-  return await sendAsBase64(payload,coverFile,extraFiles);
-}
-async function sendAsBase64(payload, coverFile, extraFiles){
-  try{
-    const form2=new FormData();
-    form2.append('secret',BACKEND.SECRET);
-    ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form2.append(k,payload[k]||''));
-    form2.append('completion', String(payload.completion||0));
-    if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
-    for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
-    const res2=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'}, 30000);
-    if(res2.ok) return await res2.json();
-    return {ok:false,error:'backend_failed_'+res2.status};
-  }catch(e){ return {ok:false,error:String(e)}; }
+
+  // fallback base64
+  const form2=new FormData();
+  form2.append('secret',BACKEND.SECRET);
+  ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form2.append(k,payload[k]||''));
+  form2.append('completion', String(payload.completion||0));
+  if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
+  for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
+  const res2=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'}, 30000);
+  return res2.ok ? await res2.json() : {ok:false,error:'backend_failed_'+res2.status};
 }
 
 /* ===== submit ===== */
@@ -334,16 +327,10 @@ $('#workForm').addEventListener('submit', async (e)=>{
   try{
     const result=await sendToBackend(payload,coverFileToSend,extrasFiles);
     if(result?.ok){
-      // Atualiza do backend para obter URLs públicas
       try{
-        const remote=await fetchRemoteItems();
+        const remote=await fetchRemoteItems();   // volta já com URLs do proxy
         if(Array.isArray(remote)){
-          state.items=remote.map(it=>({
-            id:it.id,title:it.title,engineer:it.engineer,location:it.location,
-            startDate:it.startDate,endDate:it.endDate,status:it.status,completion:it.completion,
-            cover:it.cover||'', photos:(it.photos||[]).map(p=>({src:p.src,alt:p.alt||it.title,takenAt:p.takenAt}))
-          }));
-          normalize(); safeSaveLocal(state.items); fillYears(); render();
+          state.items=remote; normalize(); safeSaveLocal(state.items); fillYears(); render();
         }
       }catch(err){ console.warn('Refresh remoto após envio falhou:', err); }
     }else if(!result?.skipped){
