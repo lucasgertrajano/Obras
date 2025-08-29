@@ -27,7 +27,7 @@ const PLACEHOLDER =
 /* ========= BACKEND =========
    Coloque aqui a URL /exec do SEU deploy ativo */
 const BACKEND = {
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbzRGtwnbko5nSITqDi8Y29Lh-WtwgYjpjVokUaxYYkSr0H9miWjKP-8Eqp7B3pB5PbB-A/exec',
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbz_Q392Kp3CqZAtnmK1KVPxi6OaaAjR8NBFfTgtLTG-bu8wsBVhlDRK9fnQ3BdzdWXHcA/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
 
