@@ -1,7 +1,7 @@
 /* ================== Portal de Obras — JS (frontend) ==================
-   - Busca do backend (Drive) com action=list (via proxy de imagem)
-   - Cache local leve (metadados + miniaturas comprimidas)
-   - Envia JSON + arquivos (capa e extras) ao Apps Script Web App
+   - Busca do backend (action=list) com URLs de imagem servidas pelo Web App
+   - Cache local leve (metadados + miniaturas)
+   - Envio de obra e fotos (multipart + fallback base64)
    ------------------------------------------------------------------ */
 
 const $  = s => document.querySelector(s);
@@ -16,16 +16,17 @@ const fmtDate = iso => iso ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium'
 const byCompletionDesc = (a,b) => (b.completion||0) - (a.completion||0);
 const byPhotoDateDesc  = (a,b) => new Date(b.takenAt||b.createdAt||0) - new Date(a.takenAt||a.createdAt||0);
 
-// Placeholder inline
 const PLACEHOLDER =
-  'data:image/svg+xml;utf8,' +
+  'data:image/svg+xml;utf8,'+
   encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675">
   <rect width="100%" height="100%" fill="#e9ecef"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
   style="fill:#6c757d;font-family:Inter,Arial,sans-serif;font-size:28px">Sem imagem</text></svg>`);
 
-/* ========= BACKEND ========= */
+/* ========= BACKEND =========
+   >>> Atualize WEB_APP_URL para a sua URL /exec publicada <<<
+*/
 const BACKEND = {
-  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbw7_rjr1BgTrO6LBAWroZ1isp92M84nqTxrBBiqWVPCan57DGgonP_hh1RD10pF5zStPA/exec', // <<<<< COLE A URL /exec do seu deploy
+  WEB_APP_URL: 'https://script.google.com/macros/s/AKfycbym_6MCYpBVDVK1qsyu4PP8HdAVRU8Vr4i9qc2fM32y5QOBUIzBuYEORWLBe5MRTGeOIQ/exec',
   SECRET:      'OBRAS_2025_PROD'
 };
 
@@ -43,14 +44,11 @@ async function shrinkImage(file, maxW=1024, maxH=1024, quality=0.72){
   canvas.getContext('2d').drawImage(img,0,0,w,h);
   return canvas.toDataURL('image/jpeg',quality);
 }
-function fileToDataURL(file){
-  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
-}
+function fileToDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); }
 
 function safeSaveLocal(items){
   const lightweight = items.map(it=>{
     const photos=(it.photos||[]).slice(0,MAX_LOCAL_PHOTOS).map(p=>({
-      // guardo só thumbs em base64 no cache para não estourar quota
       src: (p.src && p.src.startsWith('data:')) ? p.src : '',
       alt: p.alt||'',
       takenAt: p.takenAt || new Date().toISOString()
@@ -64,14 +62,13 @@ function safeSaveLocal(items){
   });
   try{ localStorage.setItem(LS_KEY, JSON.stringify(lightweight)); }
   catch(err){
-    console.warn('Cache local cheio; salvando mínimo.', err);
     const minimal = lightweight.map(it=>({...it, cover:'', photos:[]}));
     try{ localStorage.setItem(LS_KEY, JSON.stringify(minimal)); }catch{}
   }
 }
 function hydrateLocal(){ try{ const raw=localStorage.getItem(LS_KEY); if(raw) state.items=JSON.parse(raw);}catch{} }
 
-/* ===== Helpers de rede ===== */
+/* ===== rede ===== */
 function buildListUrl(){
   const u = new URL(BACKEND.WEB_APP_URL);
   u.searchParams.set('action','list');
@@ -79,71 +76,50 @@ function buildListUrl(){
   u.searchParams.set('t', Date.now().toString());
   return u.toString();
 }
-function buildImageUrl(fileId){
-  // usa o proxy do Apps Script para servir imagem mesmo em aba anônima
-  const u = new URL(BACKEND.WEB_APP_URL);
-  u.searchParams.set('action','image');
-  u.searchParams.set('id', fileId);
-  u.searchParams.set('t', Date.now().toString()); // evita cache agressivo do navegador
-  return u.toString();
-}
 async function fetchWithTimeout(resource, options = {}, timeoutMs = 10000){
   const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try{
-    const res = await fetch(resource, { ...options, signal: controller.signal });
-    return res;
-  } finally { clearTimeout(id); }
+  const id = setTimeout(()=>controller.abort(), timeoutMs);
+  try{ return await fetch(resource, { ...options, signal: controller.signal }); }
+  finally{ clearTimeout(id); }
 }
-
 async function fetchRemoteItems(){
-  const url = buildListUrl();
-  const res = await fetchWithTimeout(url, { method:'GET', redirect:'follow', cache:'no-store' }, 10000);
+  const res = await fetchWithTimeout(buildListUrl(), { method:'GET', cache:'no-store' }, 10000);
   if (!res.ok) throw new Error('HTTP '+res.status);
   const json = await res.json();
   if (!json?.ok) throw new Error(json?.error||'backend_error');
-
-  // Mapeia cover e fotos para usar SEMPRE o proxy
-  return (json.items || []).map(it => {
-    const photos = (it.photos||[]).map(p => ({
-      src: buildImageUrl(p.id),
-      alt: p.alt || it.title || '',
-      takenAt: p.takenAt
-    }));
-    const cover = it.coverId ? buildImageUrl(it.coverId) : (photos[0]?.src || '');
-    return { ...it, cover, photos };
-  });
+  return json.items || [];
 }
 
 /* ===== carga inicial ===== */
 async function loadInitial(){
   try{
-    const remote = await fetchRemoteItems();    // agora imagens vêm pelo proxy
-    if (Array.isArray(remote)) {
-      state.items = remote;
-      normalize(); safeSaveLocal(state.items); fillYears(); render();
-      return;
-    }
+    const remote = await fetchRemoteItems();
+    state.items = (remote||[]).map(it=>({
+      id: it.id, title: it.title, engineer: it.engineer, location: it.location,
+      startDate: it.startDate, endDate: it.endDate, status: it.status, completion: it.completion,
+      cover: it.cover || '',
+      photos: (it.photos||[]).map(p=>({src:p.src, alt:p.alt||it.title, takenAt:p.takenAt}))
+    }));
+    normalize(); safeSaveLocal(state.items); fillYears(); render();
   }catch(err){
-    console.warn('Falha ao carregar do backend, caindo para cache local:', err);
+    console.warn('Remoto indisponível, usando cache local:', err);
+    hydrateLocal(); normalize(); fillYears(); render();
   }
-  hydrateLocal(); normalize(); fillYears(); render();
 }
 
-/* ===== normalização e filtros ===== */
+/* ===== normalização & render ===== */
 function normalize(){
   for(const it of state.items){
-    it.photos = (it.photos||[]).map(p=>({...p, takenAt: p.takenAt||new Date().toISOString()})).sort(byPhotoDateDesc);
+    it.photos = (it.photos||[]).map(p=>({...p, takenAt: p.takenAt || new Date().toISOString()})).sort(byPhotoDateDesc);
   }
   state.items.sort(byCompletionDesc);
 }
 function fillYears(){
-  const years=new Set(state.items.map(i=>new Date(i.startDate).getFullYear()).filter(y=>!Number.isNaN(y)));
+  const years = new Set(state.items.map(i=>new Date(i.startDate).getFullYear()).filter(y=>!Number.isNaN(y)));
   $('#yearFilter').innerHTML =
     `<option value="all">Todos os anos</option>` +
     [...years].sort((a,b)=>b-a).map(v=>`<option>${v}</option>`).join('');
 }
-
 function render(){
   const y=$('#yearFilter').value, s=$('#statusFilter').value, q=$('#searchInput').value.trim().toLowerCase();
 
@@ -161,10 +137,11 @@ function render(){
   state.filtered.forEach((it, idx)=>{
     const n=tpl.content.cloneNode(true);
     const img=n.querySelector('.card__img');
+    img.loading='lazy';
+    img.decoding='async';
+    img.referrerPolicy='no-referrer';       // previne bloqueios por política
     img.src = it.cover || it.photos?.[0]?.src || PLACEHOLDER;
     img.alt = it.title || 'Obra';
-    img.loading = 'lazy';   // melhora o tempo de carregamento
-    img.decoding = 'async';
 
     n.querySelector('.overlay').style.opacity = Math.min(1, Math.max(0, (it.completion||0)/100));
     n.querySelector('.badge').textContent = `${it.status||'—'} • ${it.completion||0}%`;
@@ -178,12 +155,10 @@ function render(){
     n.querySelector('[data-action="edit"]').addEventListener('click',()=>openModal(it.id));
     wrap.appendChild(n);
   });
-
   reveal();
 }
-
 function reveal(){
-  const io=new IntersectionObserver(es=>{
+  const io = new IntersectionObserver(es=>{
     for(const e of es){ if(e.isIntersecting){ e.target.classList.add('visible'); io.unobserve(e.target);} }
   },{threshold:.12});
   $$('.card.reveal').forEach(el=>io.observe(el));
@@ -198,7 +173,12 @@ function openAlbum(filteredIndex){
 }
 function renderLightbox(){
   const it=state.filtered[state.lb.albumIndex]; const p=it.photos[state.lb.photoIndex];
-  $('#lbImg').src=p.src || PLACEHOLDER;
+  const img = $('#lbImg');
+  img.loading='eager';
+  img.decoding='async';
+  img.referrerPolicy='no-referrer';
+  img.src=p.src || PLACEHOLDER;
+
   $('#lbTitle').textContent=it.title || 'Sem título';
   $('#lbInfo').innerHTML = `
     <div><strong>Engenheiro:</strong> ${it.engineer||'—'}</div>
@@ -207,11 +187,12 @@ function renderLightbox(){
     <div><strong>Início:</strong> ${it.startDate?fmtDate(it.startDate):'—'}</div>
     <div><strong>Prev. Término:</strong> ${it.endDate?fmtDate(it.endDate):'—'}</div>`;
   $('#lbDate').textContent = p.takenAt ? new Intl.DateTimeFormat('pt-BR',{dateStyle:'medium',timeStyle:'short'}).format(new Date(p.takenAt)) : '';
+
   const th=$('#thumbs'); th.innerHTML='';
   it.photos.forEach((ph,i)=>{
     const b=document.createElement('button'); b.className='thumb'+(i===state.lb.photoIndex?' active':'');
-    const im=document.createElement('img'); im.src=ph.src || PLACEHOLDER; im.alt=ph.alt||it.title||'';
-    im.loading='lazy'; im.decoding='async';
+    const im=document.createElement('img'); im.loading='lazy'; im.decoding='async'; im.referrerPolicy='no-referrer';
+    im.src=ph.src || PLACEHOLDER; im.alt=ph.alt||it.title||'';
     b.appendChild(im); b.addEventListener('click',()=>{ state.lb.photoIndex=i; renderLightbox();});
     th.appendChild(b);
   });
@@ -219,7 +200,7 @@ function renderLightbox(){
 function closeLightbox(){ $('#lightbox').hidden=true; document.body.style.overflow=''; document.body.classList.remove('album-open'); }
 function navLightbox(d){ const it=state.filtered[state.lb.albumIndex]; const n=it.photos.length; state.lb.photoIndex=(state.lb.photoIndex+d+n)%n; renderLightbox(); }
 
-/* ===== Modal ===== */
+/* ===== Modal & Envio ===== */
 function openModal(id=null){
   $('#modal').hidden=false; document.body.style.overflow='hidden';
   $('#modalTitle').textContent=id?'Editar obra':'Nova obra'; state.editingId=id;
@@ -235,7 +216,6 @@ function openModal(id=null){
 }
 function closeModal(){ $('#modal').hidden=true; document.body.style.overflow=''; state.editingId=null; }
 
-/* ===== envio ao backend ===== */
 async function sendToBackend(payload, coverFile, extraFiles=[]){
   if(!BACKEND.WEB_APP_URL || !BACKEND.SECRET) return {ok:false,skipped:true};
   const triedFilesCount=(coverFile?1:0)+extraFiles.length;
@@ -248,40 +228,33 @@ async function sendToBackend(payload, coverFile, extraFiles=[]){
   extraFiles.forEach((f,i)=> form1.append(`extra${i}`, f, f.name||`foto_${String(i+1).padStart(2,'0')}.jpg`));
 
   try{
-    const res=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form1, redirect:'follow'}, 15000);
+    const res=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form1},15000);
     if(res.ok){
       const json=await res.json();
       if(triedFilesCount>0 && (!Array.isArray(json.files)||json.files.length===0)){
-        // respondeu ok mas sem arquivos: força base64
-        const form2=new FormData();
-        form2.append('secret',BACKEND.SECRET);
-        ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form2.append(k,payload[k]||''));
-        form2.append('completion', String(payload.completion||0));
-        if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
-        for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
-        const res2=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'}, 30000);
-        return res2.ok ? await res2.json() : {ok:false,error:'backend_failed_'+res2.status};
+        return await sendAsBase64(payload,coverFile,extraFiles);
       }
       return json;
-    } else {
-      console.warn('[sendToBackend] HTTP', res.status, res.statusText);
     }
   }catch(e){ console.warn('Falha upload arquivos',e); }
 
   if(triedFilesCount===0) return {ok:false,error:'upload_skipped_no_files'};
-
-  // fallback base64
-  const form2=new FormData();
-  form2.append('secret',BACKEND.SECRET);
-  ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form2.append(k,payload[k]||''));
-  form2.append('completion', String(payload.completion||0));
-  if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
-  for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
-  const res2=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form2, redirect:'follow'}, 30000);
-  return res2.ok ? await res2.json() : {ok:false,error:'backend_failed_'+res2.status};
+  return await sendAsBase64(payload,coverFile,extraFiles);
+}
+async function sendAsBase64(payload, coverFile, extraFiles){
+  try{
+    const form2=new FormData();
+    form2.append('secret',BACKEND.SECRET);
+    ['id','title','engineer','location','startDate','endDate','status'].forEach(k=>form2.append(k,payload[k]||''));
+    form2.append('completion', String(payload.completion||0));
+    if(coverFile) form2.append('cover_b64', await fileToDataURL(coverFile));
+    for(let i=0;i<extraFiles.length;i++) form2.append(`extra${i}_b64`, await fileToDataURL(extraFiles[i]));
+    const res2=await fetchWithTimeout(BACKEND.WEB_APP_URL,{method:'POST',body:form2},30000);
+    if(res2.ok) return await res2.json();
+    return {ok:false,error:'backend_failed_'+res2.status};
+  }catch(e){ return {ok:false,error:String(e)}; }
 }
 
-/* ===== submit ===== */
 $('#workForm').addEventListener('submit', async (e)=>{
   e.preventDefault();
   const f=e.currentTarget;
@@ -307,8 +280,8 @@ $('#workForm').addEventListener('submit', async (e)=>{
       const coverThumb=await shrinkImage(coverFileToSend);
       payload.cover=coverThumb||'';
       payload.photos.push({src:coverThumb||'',alt:payload.title+' (capa)',takenAt:new Date().toISOString()});
-    }else{ alert('Selecione a foto principal.'); return; }
-  }else{
+    } else { alert('Selecione a foto principal.'); return; }
+  } else {
     if(f.coverFile.files.length) coverFileToSend=f.coverFile.files[0];
     const it=state.items.find(x=>x.id===state.editingId);
     if(it){ payload.cover=it.cover||''; payload.photos=(it.photos||[]).slice(); }
@@ -328,11 +301,14 @@ $('#workForm').addEventListener('submit', async (e)=>{
     const result=await sendToBackend(payload,coverFileToSend,extrasFiles);
     if(result?.ok){
       try{
-        const remote=await fetchRemoteItems();   // volta já com URLs do proxy
-        if(Array.isArray(remote)){
-          state.items=remote; normalize(); safeSaveLocal(state.items); fillYears(); render();
-        }
-      }catch(err){ console.warn('Refresh remoto após envio falhou:', err); }
+        const remote=await fetchRemoteItems();
+        state.items=(remote||[]).map(it=>({
+          id:it.id,title:it.title,engineer:it.engineer,location:it.location,
+          startDate:it.startDate,endDate:it.endDate,status:it.status,completion:it.completion,
+          cover:it.cover||'', photos:(it.photos||[]).map(p=>({src:p.src,alt:p.alt||it.title,takenAt:p.takenAt}))
+        }));
+        normalize(); safeSaveLocal(state.items); fillYears(); render();
+      }catch{}
     }else if(!result?.skipped){
       console.warn('Backend erro:',result);
       alert('Obra salva localmente. Não foi possível enviar ao Drive agora (veja o console).');
@@ -343,7 +319,7 @@ $('#workForm').addEventListener('submit', async (e)=>{
   }
 });
 
-/* ===== eventos gerais ===== */
+/* ===== eventos ===== */
 $('#btnNew').addEventListener('click',()=>openModal(null));
 $('#cancel').addEventListener('click',closeModal);
 $('#modalClose').addEventListener('click',closeModal);
